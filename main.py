@@ -36,63 +36,132 @@ MONITOR_MESSAGE = 'OK'
 
 
 class Monitor:
-    pass  # TODO: implement
+    """A monitor exposing a Web server while the main loop is running."""
 
     def __init__(self):
-        pass  # TODO: implement
+        """Creates a Web server on a background thread."""
 
+        self.server = HTTPServer((MONITOR_HOST, MONITOR_PORT),
+                                 self.MonitorHandler)
+        self.thread = Thread(target=self.server.serve_forever)
+        self.thread.daemon = True
 
     def start(self):
-        pass  # TODO: implement
+        """Starts the Web server background thread."""
 
+        self.thread.start()
 
     def stop(self):
-        pass  # TODO: implement
+        """Stops the Web server and background thread."""
 
+        self.server.shutdown()
+        self.server.server_close()
 
     class MonitorHandler(BaseHTTPRequestHandler):
-        pass  # TODO: implement
+        """An HTTP request handler that responds with "OK" while running."""
 
         def _set_headers(self):
-            pass  # TODO: implement
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
 
         def do_GET(self):
-            pass  # TODO: implement
+            self._set_headers()
+            self.wfile.write(MONITOR_MESSAGE.encode('utf-8'))
 
         def do_HEAD(self):
-            pass  # TODO: implement
+            self._set_headers()
 
 
 class Main:
-    pass  # TODO: implement
+    """A wrapper for the main application logic and retry loop."""
 
     def __init__(self):
-        pass  # TODO: implement
+        self.logs = Logs(name='main', to_cloud=LOGS_TO_CLOUD)
+        self.twitter = Twitter(logs_to_cloud=LOGS_TO_CLOUD)
 
     def twitter_callback(self, tweet):
-        pass  # TODO: implement
+        """Analyzes Trump tweets, trades stocks, and tweets about it."""
 
+        # Initialize the Analysis, Logs, Trading, and Twitter instances inside
+        # the callback to create separate httplib2 instances per thread.
+        analysis = Analysis(logs_to_cloud=LOGS_TO_CLOUD)
+        logs = Logs(name='main-callback', to_cloud=LOGS_TO_CLOUD)
 
+        # Analyze the tweet.
+        companies = analysis.find_companies(tweet)
+        logs.info('Using companies: %s' % companies)
+        if not companies:
+            return
 
+        # Trade stocks.
+        trading = Trading(logs_to_cloud=LOGS_TO_CLOUD)
+        trading.make_trades(companies)
 
+        # Tweet about it.
+        twitter = Twitter(logs_to_cloud=LOGS_TO_CLOUD)
+        twitter.tweet(companies, tweet)
 
     def run_session(self):
-        pass  # TODO: implement
+        """Runs a single streaming session. Logs and cleans up after
+        exceptions.
+        """
 
+        self.logs.info('Starting new session.')
+        try:
+            self.twitter.start_streaming(self.twitter_callback)
+        except:
+            self.logs.catch()
+        finally:
+            self.twitter.stop_streaming()
+            self.logs.info('Ending session.')
 
     def backoff(self, tries):
-        pass  # TODO: implement
+        """Sleeps an exponential number of seconds based on the number of
+        tries.
+        """
 
+        delay = BACKOFF_STEP_S * pow(2, tries)
+        self.logs.warn('Waiting for %.1f seconds.' % delay)
+        sleep(delay)
 
     def run(self):
-        pass  # TODO: implement
+        """Runs the main retry loop with exponential backoff."""
 
+        tries = 0
+        while True:
 
+            # The session blocks until an error occurs.
+            self.run_session()
 
+            # Remember the first time a backoff sequence starts.
+            now = datetime.now()
+            if tries == 0:
+                self.logs.debug('Starting first backoff sequence.')
+                backoff_start = now
 
+            # Reset the backoff sequence if the last error was long ago.
+            if (now - backoff_start).total_seconds() > BACKOFF_RESET_S:
+                self.logs.debug('Starting new backoff sequence.')
+                tries = 0
+                backoff_start = now
 
+            # Give up after the maximum number of tries.
+            if tries >= MAX_TRIES:
+                self.logs.warn('Exceeded maximum retry count.')
+                break
 
+            # Wait according to the progression of the backoff sequence.
+            self.backoff(tries)
 
+            # Increment the number of tries for the next error.
+            tries += 1
 
 
 if __name__ == '__main__':
+    monitor = Monitor()
+    monitor.start()
+    try:
+        Main().run()
+    finally:
+        monitor.stop()
